@@ -3,8 +3,7 @@ import os
 import time
 from neo4j.exceptions import TransientError
 from langchain_neo4j import Neo4jGraph
-from src.shared.common_fn import create_gcs_bucket_folder_name_hashed, delete_uploaded_local_file, load_embedding_model, get_value_from_env, get_user_embedding_model
-from src.document_sources.gcs_bucket import delete_file_from_gcs
+from src.shared.common_fn import delete_uploaded_local_file, load_embedding_model, get_value_from_env, get_user_embedding_model
 from src.shared.constants import NODEREL_COUNT_QUERY_WITH_COMMUNITY, NODEREL_COUNT_QUERY_WITHOUT_COMMUNITY
 from src.entities.source_node import sourceNode
 from src.communities import MAX_COMMUNITY_LEVELS
@@ -305,15 +304,10 @@ class graphDBdataAccess:
         source_types_list= list(map(str.strip, json.loads(source_types)))
         gcs_file_cache = get_value_from_env("GCS_FILE_CACHE","False","bool")
         
-        for (file_name,source_type) in zip(filename_list, source_types_list):
+        for (file_name, source_type) in zip(filename_list, source_types_list):
             merged_file_path = os.path.join(merged_dir, file_name)
-            if source_type == 'local file' and gcs_file_cache:
-                BUCKET_UPLOAD_FILE = get_value_from_env('BUCKET_UPLOAD_FILE', default_value=None, data_type=str)
-                folder_name = create_gcs_bucket_folder_name_hashed(uri, file_name)
-                delete_file_from_gcs(BUCKET_UPLOAD_FILE,folder_name,file_name)
-            else:
-                logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
-                delete_uploaded_local_file(merged_file_path,file_name)
+            logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
+            delete_uploaded_local_file(merged_file_path, file_name)
                 
         query_to_delete_document="""
             MATCH (d:Document)

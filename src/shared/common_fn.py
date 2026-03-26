@@ -24,46 +24,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 _embedding_instances = {}
 _embedding_locks = {}
 
-def create_youtube_url(url):
-    you_tu_url = "https://www.youtube.com/watch?v="
-    u_pars = urlparse(url)
-    quer_v = parse_qs(u_pars.query).get('v')
-    if quer_v:
-      return  you_tu_url + quer_v[0].strip()
 
-    pth = u_pars.path.split('/')
-    if pth:
-      return you_tu_url + pth[-1].strip()
-
-def check_url_source(source_type, yt_url:str=None, wiki_query:str=None):
-    language=''
-    try:
-      logging.info(f"incoming URL: {yt_url}")
-      if source_type == 'youtube':
-        if re.match(r'(?:https?:\/\/)?(?:www\.)?youtu\.?be(?:\.com)?\/?.*(?:watch|embed)?(?:.*v=|v\/|\/)([\w\-_]+)\&?',yt_url.strip()):
-          youtube_url = create_youtube_url(yt_url.strip())
-          logging.info(youtube_url)
-          return youtube_url,language
-        else:
-          raise Exception('Incoming URL is not youtube URL')
-      
-      elif  source_type == 'Wikipedia':
-        wiki_query_id=''
-
-        wikipedia_url_regex = r'https?:\/\/(www\.)?([a-zA-Z]{2,3})\.wikipedia\.org\/wiki\/(.*)'
-        
-        match = re.search(wikipedia_url_regex, wiki_query.strip())
-        if match:
-                language = match.group(2)
-                wiki_query_id = match.group(3)
-        else:
-            raise Exception(f'Not a valid wikipedia url: {wiki_query} ')
-
-        logging.info(f"wikipedia query id = {wiki_query_id}")     
-        return wiki_query_id, language     
-    except Exception as e:
-      logging.error(f"Error in recognize URL: {e}")
-      raise Exception(e)
 
 
 def get_chunk_and_graphDocument(graph_document_list, chunkId_chunkDoc_list):
@@ -200,11 +161,7 @@ def close_db_connection(graph, api_name):
       logging.info(f"closing connection for {api_name} api")
       # graph._driver.close()   
   
-def create_gcs_bucket_folder_name_hashed(uri, file_name):
-  folder_name = uri + file_name
-  folder_name_sha1 = hashlib.sha1(folder_name.encode())
-  folder_name_sha1_hashed = folder_name_sha1.hexdigest()
-  return folder_name_sha1_hashed
+
 
 def formatted_time(current_time):
   formatted_time = current_time.strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -606,10 +563,10 @@ def get_user_embedding_model(email: str, uri: str) -> dict:
             if embedding_provider and embedding_model and embedding_dimension is not None:
                 return embedding_provider, embedding_model, embedding_dimension, allow_embedding_change
 
-        return "sentence-transformer", "all-MiniLM-L6-v2", 384, allow_embedding_change
+        return "ollama", "all-minilm", 384, allow_embedding_change
     except Exception as e:
         logging.error(f"Error in get_user_embedding_model for email {email}: {e}")
-        return "sentence-transformer", "all-MiniLM-L6-v2", 384, allow_embedding_change
+        return "ollama", "all-minilm", 384, allow_embedding_change
 
 def change_user_embedding_model(email:str, uri:str, new_embedding_provider: str, new_embedding_model: str) -> dict:
     """

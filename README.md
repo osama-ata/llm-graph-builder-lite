@@ -1,78 +1,66 @@
-# Project Overview
+# LLM Graph Builder Lite
 
-Welcome to our project! This project is built using FastAPI framework to create a fast and modern API with Python.
+This is a lightweight, local-first version of the Neo4j LLM Graph Builder. It is refactored to rely exclusively on local **Ollama** models for both LLM processing and text embeddings, ensuring data privacy and reducing cloud costs.
+
+## Features
+
+- **Local-First**: Uses Ollama for LLM and Embeddings.
+- **Minimal Dependencies**: Stripped of heavy cloud-provider libraries (GCS, S3, OpenAI, VertexAI).
+- **Modern Tooling**: Managed with `uv` for lightning-fast dependency resolution.
+- **Local Sources Only**: Supports local file uploads (.pdf, .txt) exclusively.
 
 ## Prerequisites
 
-- Python 3.13 or higher
-- [uv](https://github.com/astral-sh/uv) (Extremely fast Python package installer and resolver)
-
-## Feature
-
-API Endpoint : This project provides various API endpoint to perform specific tasks.
-Data Validation : Utilize FastAPI data validation and serialization feature.
-Interactive Documentation : Access Swagger UI and ReDoc for interactive API documentation.
+- **Python 3.13+**
+- **Ollama**: [Download Ollama](https://ollama.com/) and ensure it's running locally.
+- **Neo4j**: A running Neo4j instance (Aura or local Desktop/Docker).
+- **uv**: [Install uv](https://github.com/astral-sh/uv) (`pip install uv`).
 
 ## Getting Started
 
-Follow these steps to set up and run the project locally:
+1. **Pull Required Models**:
+   ```bash
+   ollama pull llama3
+   ollama pull all-minilm
+   ```
 
-1. Clone the Repository:
+2. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/osama-ata/llm-graph-builder-lite.git
+   cd llm-graph-builder-lite
+   ```
 
-> git clone https://github.com/osama-ata/llm-graph-builder-lite.git
+3. **Configure Environment**:
+   Copy `example.env` to `.env` and fill in your Neo4j credentials.
+   ```bash
+   cp example.env .env
+   ```
 
-> cd llm-graph-builder-lite
+4. **Install and Run Locally**:
+   ```bash
+   uv sync
+   uv run uvicorn score:app --reload
+   ```
 
-2. Setup the environment and install dependencies:
+5. **Run with Docker Compose**:
+   ```bash
+   docker compose up --build
+   ```
+   The backend will be available at `http://localhost:8000`.
 
-> uv sync
+## API Documentation
 
-Run the server:
-
-> uv run uvicorn score:app --reload
-
-## Run project using docker
-
-## prerequisite
-
-Before proceeding, ensure the following software is installed on your machine
-
-Docker: https://www.docker.com/
-
-1. Build the docker image
-
-   > docker build -t your_image_name .
-
-   Replace `your_image_name` with the meaningful name for your Docker image
-
-2. Run the Docker Container
-
-   > docker run -it -p 8000:8000 your_image_name
-
-   Replace `8000` with the desired port.
-
-## Access the API Documentation
-
-Open your browser and navigate to
-http://127.0.0.1:8000/docs for Swagger UI or
-http://127.0.0.1:8000/redocs for ReDoc.
-
-## Project Structure
-
-`score.py`: Score entry point for FastAPI application
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
 
 ## Configuration
 
-Update the environment variable in `.env` file. Refer example.env in backend folder for more config.
+Key variables in `.env`:
 
-`OPENAI_API_KEY`: Open AI key to use incase of openai embeddings
+- `OLLAMA_BASE_URL`: URL where your Ollama instance is running.
+- `NEO4J_URI`: Connection string for Neo4j.
+- `LLM_MODEL_CONFIG_OLLAMA_LLAMA3`: Config for specific Ollama models.
 
-`NEO4J_URI` : Neo4j URL
+## License
 
-`NEO4J_USERNAME` : Neo4J database username
-
-`NEO4J_PASSWORD` : Neo4j database user password
-
-## Contact
-
-For questions or support, feel free to contact us at christopher.crosbie@neo4j.com or michael.hunger@neo4j.com
+Apache-2.0

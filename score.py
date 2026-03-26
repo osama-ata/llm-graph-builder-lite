@@ -31,16 +31,14 @@ from src.graph_query import get_chunktext_results, get_graph_results, visualize_
 from src.logger import CustomLogger
 from src.main import (
     connection_check_and_get_vector_dimensions,
-    create_source_node_graph_url_youtube,create_source_node_graph_web_url,
-    create_graph_database_connection, create_source_node_graph_url_wikipedia,
-    extract_graph_from_file_Wikipedia,
-    extract_graph_from_file_local_file, extract_graph_from_file_youtube,
-    extract_graph_from_web_page, failed_file_process, get_labels_and_relationtypes, get_source_list_from_graph,
+    create_graph_database_connection,
+    extract_graph_from_file_local_file,
+    failed_file_process, get_labels_and_relationtypes, get_source_list_from_graph,
     manually_cancelled_job, populate_graph_schema_from_text, set_status_retry, update_graph, upload_file
 )
 from src.neighbours import get_neighbour_nodes
 from src.post_processing import create_entity_embedding, create_vector_fulltext_indexes, graph_schema_consolidation
-from src.ragas_eval import get_additional_metrics, get_ragas_metrics
+
 from src.shared.common_fn import formatted_time, get_value_from_env, get_remaining_token_limits, get_user_embedding_model, change_user_embedding_model
 from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 from Secweb.XContentTypeOptions import XContentTypeOptions
@@ -140,20 +138,9 @@ async def create_source_knowledge_graph_url(
 ):
     """Create a source node in the knowledge graph from a given URL or bucket."""
     try:
-        start = time.time()
-        source = params.source_url if params.source_url is not None else params.wiki_query
-        graph = create_graph_database_connection(credentials)
-        if params.source_type == 'web-url':
-            lst_file_name, success_count, failed_count = await asyncio.to_thread(
-                create_source_node_graph_web_url, graph, params)
-        elif params.source_type == 'youtube':
-            lst_file_name, success_count, failed_count = await asyncio.to_thread(
-                create_source_node_graph_url_youtube, graph, params)
-        elif params.source_type == 'Wikipedia':
-            lst_file_name, success_count, failed_count = await asyncio.to_thread(
-                create_source_node_graph_url_wikipedia, graph, params)
-        else:
-            return create_api_response('Failed', message='source_type is other than accepted source')
+        # In lite version, only local file upload is supported.
+        # url/scan was used for external sources which are now removed.
+        return create_api_response('Failed', message='External sources (Wikipedia, YouTube, Web) are disabled in this lite version.')
 
         message = f"Source Node created successfully for source type: {params.source_type} and source: {source}"
         end = time.time()
@@ -221,14 +208,8 @@ async def extract_knowledge_graph_from_file(
             
         if params.source_type == 'local file':
             uri_latency, result = await extract_graph_from_file_local_file(credentials, params, merged_file_path)
-        elif params.source_type == 'web-url':
-            uri_latency, result = await extract_graph_from_web_page(credentials, params)
-        elif params.source_type == 'youtube' and params.source_url:
-            uri_latency, result = await extract_graph_from_file_youtube(credentials, params)
-        elif params.source_type == 'Wikipedia' and params.wiki_query:
-            uri_latency, result = await extract_graph_from_file_Wikipedia(credentials, params)
         else:
-            return create_api_response('Failed', message='source_type is other than accepted source')
+            return create_api_response('Failed', message='Only local file source_type is supported in this lite version.')
         extract_api_time = time.time() - start_time
         json_obj = result.copy()
         if result is not None:
@@ -958,80 +939,6 @@ async def retry_processing(
     finally:
         gc.collect()    
 
-@app.post('/metric')
-async def calculate_metric(
-    question: str = Form(),
-    context: str = Form(),
-    answer: str = Form(),
-    model: str = Form(),
-    mode: str = Form(),
-    embedding_provider: str = Form(None),
-    embedding_model: str = Form(None)
-):
-    """Calculate RAGAS metrics for a given question, context, and answer."""
-    try:
-        start = time.time()
-        context_list = [str(item).strip() for item in json.loads(context)] if context else []
-        answer_list = [str(item).strip() for item in json.loads(answer)] if answer else []
-        mode_list = [str(item).strip() for item in json.loads(mode)] if mode else []
-
-        result = await asyncio.to_thread(
-            get_ragas_metrics, question, context_list, answer_list, model, embedding_provider, embedding_model
-        )
-        if result is None or "error" in result:
-            return create_api_response(
-                'Failed',
-                message='Failed to calculate evaluation metrics.',
-                error=result.get("error", "Ragas evaluation returned null")
-            )
-        data = {mode: {metric: result[metric][i] for metric in result} for i, mode in enumerate(mode_list)}
-        end = time.time()
-        elapsed_time = end - start
-        json_obj = {'api_name':'metric', 'question':question, 'context':context, 'answer':answer, 'model':model,'mode':mode,
-                            'logging_time': formatted_time(datetime.now(timezone.utc)), 'elapsed_api_time':f'{elapsed_time:.2f}'}
-        logger.log_struct(json_obj, "INFO")
-        return create_api_response('Success', data=data)
-    except Exception as e:
-        logging.exception(f"Error while calculating evaluation metrics: {e}")
-        return create_api_response(
-            'Failed',
-            message="Error while calculating evaluation metrics",
-            error=str(e)
-        )
-    finally:
-        gc.collect()
-       
-
-@app.post('/additional_metrics')
-async def calculate_additional_metrics(question: str = Form(),
-                                        context: str = Form(),
-                                        answer: str = Form(),
-                                        reference: str = Form(),
-                                        model: str = Form(),
-                                        mode: str = Form(),
-):
-   try:
-       context_list = [str(item).strip() for item in json.loads(context)] if context else []
-       answer_list = [str(item).strip() for item in json.loads(answer)] if answer else []
-       mode_list = [str(item).strip() for item in json.loads(mode)] if mode else []
-       result = await get_additional_metrics(question, context_list,answer_list, reference, model)
-       if result is None or "error" in result:
-           return create_api_response(
-               'Failed',
-               message='Failed to calculate evaluation metrics.',
-               error=result.get("error", "Ragas evaluation returned null")
-           )
-       data = {mode: {metric: result[i][metric] for metric in result[i]} for i, mode in enumerate(mode_list)}
-       return create_api_response('Success', data=data)
-   except Exception as e:
-       logging.exception(f"Error while calculating evaluation metrics: {e}")
-       return create_api_response(
-           'Failed',
-           message="Error while calculating evaluation metrics",
-           error=str(e)
-       )
-   finally:
-       gc.collect()
 
 @app.post("/fetch_chunktext")
 async def fetch_chunktext(

@@ -13,13 +13,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from langchain_community.document_loaders import WikipediaLoader, WebBaseLoader
-from langchain_neo4j import Neo4jGraph
-
 from src.document_sources.local_file import get_documents_from_file_by_path
-from src.document_sources.web_pages import get_documents_from_web_page
-from src.document_sources.wikipedia import get_documents_from_wikipedia
-from src.document_sources.youtube import get_documents_from_youtube, get_youtube_combined_transcript
 from src.entities.source_node import sourceNode
 from src.graph_query import get_graphDB_driver
 from src.graphDB_dataAccess import graphDBdataAccess
@@ -50,49 +44,7 @@ logging.basicConfig(format='%(asctime)s - %(message)s', level='INFO')
 def sanitize_uploaded_fileName(filename, max_length=100):
     return filename
 
-def create_source_node_graph_url_wikipedia(graph, params):
-    """
-    Create a source node in the graph for a Wikipedia page.
-
-    Args:
-        graph: Neo4j graph connection.
-        params: SourceScanExtractParams object.
-
-    Returns:
-        tuple: (list of file info dicts, success_count, failed_count)
-    """
-    success_count=0
-    failed_count=0
-    lst_file_name=[]
-    wiki_query_id, language = check_url_source(source_type=params.source_type, wiki_query=params.wiki_query)
-    logging.info(f"Creating source node for {wiki_query_id.strip()}, {language}")
-    pages = WikipediaLoader(query=wiki_query_id.strip(), lang=language, load_max_docs=1, load_all_available_meta=True).load()
-    if pages==None or len(pages)==0:
-      failed_count+=1
-      message = f"Unable to read data for given Wikipedia url : {params.wiki_query}"
-      raise LLMGraphBuilderException(message)
-    else:
-      obj_source_node = sourceNode()
-      obj_source_node.file_name = wiki_query_id.strip()
-      obj_source_node.file_type = 'text'
-      obj_source_node.file_source = params.source_type
-      obj_source_node.file_size = sys.getsizeof(pages[0].page_content)
-      obj_source_node.model = params.model
-      obj_source_node.url = urllib.parse.unquote(pages[0].metadata['source'])
-      obj_source_node.created_at = datetime.now()
-      obj_source_node.language = language
-      obj_source_node.chunkNodeCount=0
-      obj_source_node.chunkRelCount=0
-      obj_source_node.entityNodeCount=0
-      obj_source_node.entityEntityRelCount=0
-      obj_source_node.communityNodeCount=0
-      obj_source_node.communityRelCount=0
-      graphDb_data_Access = graphDBdataAccess(graph)
-      graphDb_data_Access.create_source_node(obj_source_node)
-      success_count+=1
-      lst_file_name.append({'fileName':obj_source_node.file_name,'fileSize':obj_source_node.file_size,'url':obj_source_node.url, 'language':obj_source_node.language, 'status':'Success'})
-    return lst_file_name,success_count,failed_count
-    
+  
 async def extract_graph_from_file_local_file(credentials, params, merged_file_path):
   logging.info(f'Process file name :{params.file_name} from local file system')
   if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
@@ -102,35 +54,7 @@ async def extract_graph_from_file_local_file(credentials, params, merged_file_pa
     return await processing_source(credentials, params, pages, merged_file_path, True)
   else:
     return await processing_source(credentials, params, [], merged_file_path, True)
-  
-async def extract_graph_from_web_page(credentials, params):
-  if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    pages = get_documents_from_web_page(params.source_url)
-    if pages==None or len(pages)==0:
-      raise LLMGraphBuilderException(f'Content is not available for given URL : {params.source_url}')
-    return await processing_source(credentials, params, pages)
-  else:
-    return await processing_source(credentials, params, [])
-  
-async def extract_graph_from_file_youtube(credentials, params):
-  if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    file_name, pages = get_documents_from_youtube(params.source_url)
 
-    if pages==None or len(pages)==0:
-      raise LLMGraphBuilderException(f'Youtube transcript is not available for file : {file_name}')
-    return await processing_source(credentials, params, pages)
-  else:
-     return await processing_source(credentials, params, [])
-    
-async def extract_graph_from_file_Wikipedia(credentials, params):
-  if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    file_name, pages = get_documents_from_wikipedia(params.wiki_query, params.language)
-    if pages==None or len(pages)==0:
-      raise LLMGraphBuilderException(f'Wikipedia page is not available for file : {file_name}')
-    return await processing_source(credentials, params, pages)
-  else:
-    return await processing_source(credentials, params,[])
-  
 async def processing_source(credentials, params, pages, merged_file_path=None, is_uploaded_from_local=None):
   """
    Extracts a Neo4jGraph from a PDF file based on the model.
@@ -294,10 +218,6 @@ async def processing_source(credentials, params, pages, merged_file_path=None, i
       # merged_file_path have value only when file uploaded from local
       
       if is_uploaded_from_local and bool(is_cancelled_status) == False:
-        if GCS_FILE_CACHE:
-          folder_name = create_gcs_bucket_folder_name_hashed(credentials.uri, params.file_name)
-          delete_file_from_gcs(BUCKET_UPLOAD_FILE,folder_name,params.file_name)
-        else:
           delete_uploaded_local_file(merged_file_path, params.file_name)  
       processing_source_func = time.time() - processing_source_start_time
       logging.info(f"Time taken to processing source function completed in {processing_source_func:.2f} seconds for file name {params.file_name}")  
@@ -514,23 +434,16 @@ def upload_file(graph, model, chunk, chunk_number: int, total_chunks: int, file_
     """
     # Use sanitized filename for chunk operations
     safe_file_name = sanitize_uploaded_fileName(file_name)
-    if GCS_FILE_CACHE:
-      folder_name = create_gcs_bucket_folder_name_hashed(uri, safe_file_name)
-      upload_file_to_gcs(chunk, chunk_number, safe_file_name, BUCKET_UPLOAD_FILE, folder_name)
-    else:
-      if not os.path.exists(chunk_dir):
-        os.mkdir(chunk_dir)
-      chunk_file_path = os.path.join(chunk_dir, f"{safe_file_name}_part_{chunk_number}")
-      logging.info(f'Chunk File Path: {chunk_file_path}')
-      with open(chunk_file_path, "wb") as chunk_file:
-        chunk_file.write(chunk.file.read())
+    if not os.path.exists(chunk_dir):
+      os.mkdir(chunk_dir)
+    chunk_file_path = os.path.join(chunk_dir, f"{safe_file_name}_part_{chunk_number}")
+    logging.info(f'Chunk File Path: {chunk_file_path}')
+    with open(chunk_file_path, "wb") as chunk_file:
+      chunk_file.write(chunk.file.read())
 
     if int(chunk_number) == int(total_chunks):
         # If this is the last chunk, merge all chunks into a single file
-        if GCS_FILE_CACHE:
-            file_size = merge_file_gcs(BUCKET_UPLOAD_FILE, safe_file_name, folder_name, int(total_chunks))
-        else:
-            file_size = merge_chunks_local(safe_file_name, int(total_chunks), chunk_dir, merged_dir)
+        file_size = merge_chunks_local(safe_file_name, int(total_chunks), chunk_dir, merged_dir)
         logging.info("File merged successfully")
         file_extension = safe_file_name.split('.')[-1]
         obj_source_node = sourceNode()
@@ -669,23 +582,9 @@ def set_status_retry(graph, file_name, retry_condition):
     logging.info(obj_source_node)
     graphDb_data_Access.update_source_node(obj_source_node)
 
-def failed_file_process(uri,file_name, merged_file_path):
-  """
-  Handle the processing of a failed file by moving it to a failed directory.
-
-  Args:
-      uri (str): The URI of the Neo4j database.
-      file_name (str): The name of the file that failed to process.
-      merged_file_path (str): The path of the merged file.
-
-  Returns:
-      None
-  """
-  if GCS_FILE_CACHE:
-      folder_name = create_gcs_bucket_folder_name_hashed(uri,file_name)
-      copy_failed_file(BUCKET_UPLOAD_FILE, BUCKET_FAILED_FILE, folder_name, file_name)
-      time.sleep(5)
-      delete_file_from_gcs(BUCKET_UPLOAD_FILE,folder_name,file_name)
-  else:
-      logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
-      delete_uploaded_local_file(merged_file_path,file_name)
+def failed_file_process(uri, file_name, merged_file_path):
+    """
+    Handle the processing of a failed file by moving it to a failed directory.
+    """
+    logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
+    delete_uploaded_local_file(merged_file_path, file_name)
