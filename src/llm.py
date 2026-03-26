@@ -1,19 +1,9 @@
 import logging
 from langchain_core.documents import Document
 import os
-from langchain_openai import ChatOpenAI, AzureChatOpenAI
-from langchain_google_vertexai import ChatVertexAI
-from langchain_groq import ChatGroq
-from langchain_google_vertexai import HarmBlockThreshold, HarmCategory
-from langchain_experimental.graph_transformers.diffbot import DiffbotGraphTransformer
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from langchain_experimental.graph_transformers.llm import _Graph
-from langchain_anthropic import ChatAnthropic
-from langchain_fireworks import ChatFireworks
-from langchain_aws import ChatBedrock
 from langchain_community.chat_models import ChatOllama
-import boto3
-import google.auth
 from src.shared.constants import ADDITIONAL_INSTRUCTIONS
 from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 import re
@@ -36,102 +26,16 @@ def get_llm(model: str):
     callback_handler = UniversalTokenUsageHandler()
     callback_manager = CallbackManager([callback_handler])
     try:
-        if "GEMINI" in model:
-            model_name = env_value
-            credentials, project_id = google.auth.default()
-            llm = ChatVertexAI(
-                model_name=model_name,
-                credentials=credentials,
-                project=project_id,
-                temperature=0,
-                callbacks=callback_manager,
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                },
-            
-            )
-        elif "OPENAI" in model:
-            model_name, api_key = env_value.split(",")
-            if "MINI" in model:
-                llm= ChatOpenAI(
-                api_key=api_key,
-                model=model_name,
-                callbacks=callback_manager,
-                )
-            else:
-                llm = ChatOpenAI(
-                api_key=api_key,
-                model=model_name,
-                temperature=0,
-                callbacks=callback_manager,
-                )
-
-        elif "AZURE" in model:
-            model_name, api_endpoint, api_key, api_version = env_value.split(",")
-            llm = AzureChatOpenAI(
-                api_key=api_key,
-                azure_endpoint=api_endpoint,
-                azure_deployment=model_name,  # takes precedence over model parameter
-                api_version=api_version,
-                temperature=0,
-                max_tokens=None,
-                timeout=None,
-                callbacks=callback_manager,
-            )
-
-        elif "ANTHROPIC" in model:
-            model_name, api_key = env_value.split(",")
-            llm = ChatAnthropic(
-                api_key=api_key, model=model_name, temperature=0, timeout=None,callbacks=callback_manager, 
-            )
-
-        elif "FIREWORKS" in model:
-            model_name, api_key = env_value.split(",")
-            llm = ChatFireworks(api_key=api_key, model=model_name,callbacks=callback_manager)
-
-        elif "GROQ" in model:
-            model_name, base_url, api_key = env_value.split(",")
-            llm = ChatGroq(api_key=api_key, model_name=model_name, temperature=0,callbacks=callback_manager)
-
-        elif "BEDROCK" in model:
-            model_name, aws_access_key, aws_secret_key, region_name = env_value.split(",")
-            bedrock_client = boto3.client(
-                service_name="bedrock-runtime",
-                region_name=region_name,
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-            )
-
-            llm = ChatBedrock(
-                client=bedrock_client,region_name=region_name, model_id=model_name, model_kwargs=dict(temperature=0),callbacks=callback_manager, 
-            )
-
-        elif "OLLAMA" in model:
-            model_name, base_url = env_value.split(",")
-            llm = ChatOllama(base_url=base_url, model=model_name,callbacks=callback_manager)
-
-        elif "DIFFBOT" in model:
-            #model_name = "diffbot"
-            model_name, api_key = env_value.split(",")
-            llm = DiffbotGraphTransformer(
-                diffbot_api_key=api_key,
-                extract_types=["entities", "facts"],
-            )
-            callback_handler = None
-        
-        else: 
-            model_name, api_endpoint, api_key = env_value.split(",")
-            llm = ChatOpenAI(
-                api_key=api_key,
-                base_url=api_endpoint,
-                model=model_name,
-                temperature=0,
-                callbacks=callback_manager,
-            )
+        if "OLLAMA" in model:
+            # Expected format: model_name,base_url
+            parts = env_value.split(",")
+            model_name = parts[0]
+            base_url = parts[1] if len(parts) > 1 else "http://localhost:11434"
+            llm = ChatOllama(base_url=base_url, model=model_name, callbacks=callback_manager)
+        else:
+            err = f"Unsupported model type: {model}. Only OLLAMA is supported."
+            logging.error(err)
+            raise Exception(err)
     except Exception as e:
         err = f"Error while creating LLM '{model}': {str(e)}"
         logging.error(err)
@@ -194,39 +98,34 @@ async def get_graph_document_list(
     graph_document_list = []
     token_usage = 0
     try:
-        if "diffbot_api_key" in dir(llm):
-            llm_transformer = llm
-        else:
-            try:
-                llm.with_structured_output(_Graph)
-                supports_structured_output = True
-            except Exception:
-                supports_structured_output = False
-            if supports_structured_output and not isinstance(llm, ChatGroq):
-                logging.info("LLM supports structured output; including descriptions in graph")
-                node_properties = ["description"]
-                relationship_properties = ["description"]
-                ignore_tool_usage = False
-            else:
-                logging.info("LLM does not support structured output; excluding descriptions in graph") 
-                node_properties = False
-                relationship_properties = False
-                ignore_tool_usage = True
-            
-            llm_transformer = LLMGraphTransformer(
-                llm=llm,
-                node_properties=node_properties,
-                relationship_properties=relationship_properties,
-                allowed_nodes=allowedNodes,
-                allowed_relationships=allowedRelationship,
-                ignore_tool_usage=ignore_tool_usage,
-                additional_instructions=ADDITIONAL_INSTRUCTIONS+ (additional_instructions if additional_instructions else "")
-            )
+        try:
+            llm.with_structured_output(_Graph)
+            supports_structured_output = True
+        except Exception:
+            supports_structured_output = False
         
-        if isinstance(llm,DiffbotGraphTransformer):
-            graph_document_list = llm_transformer.convert_to_graph_documents(combined_chunk_document_list)
+        if supports_structured_output:
+            logging.info("LLM supports structured output; including descriptions in graph")
+            node_properties = ["description"]
+            relationship_properties = ["description"]
+            ignore_tool_usage = False
         else:
-            graph_document_list = await llm_transformer.aconvert_to_graph_documents(combined_chunk_document_list)
+            logging.info("LLM does not support structured output; excluding descriptions in graph") 
+            node_properties = False
+            relationship_properties = False
+            ignore_tool_usage = True
+        
+        llm_transformer = LLMGraphTransformer(
+            llm=llm,
+            node_properties=node_properties,
+            relationship_properties=relationship_properties,
+            allowed_nodes=allowedNodes,
+            allowed_relationships=allowedRelationship,
+            ignore_tool_usage=ignore_tool_usage,
+            additional_instructions=ADDITIONAL_INSTRUCTIONS+ (additional_instructions if additional_instructions else "")
+        )
+        
+        graph_document_list = await llm_transformer.aconvert_to_graph_documents(combined_chunk_document_list)
     except Exception as e:
        logging.error(f"Error in graph transformation: {e}", exc_info=True)
        raise LLMGraphBuilderException(f"Graph transformation failed: {str(e)}")

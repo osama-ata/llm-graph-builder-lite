@@ -30,11 +30,11 @@ from src.graphDB_dataAccess import graphDBdataAccess
 from src.graph_query import get_chunktext_results, get_graph_results, visualize_schema
 from src.logger import CustomLogger
 from src.main import (
-    connection_check_and_get_vector_dimensions, create_source_node_graph_url_gcs, create_source_node_graph_url_s3,
+    connection_check_and_get_vector_dimensions,
     create_source_node_graph_url_youtube,create_source_node_graph_web_url,
     create_graph_database_connection, create_source_node_graph_url_wikipedia,
-    extract_graph_from_file_Wikipedia, extract_graph_from_file_gcs,
-    extract_graph_from_file_local_file, extract_graph_from_file_s3, extract_graph_from_file_youtube,
+    extract_graph_from_file_Wikipedia,
+    extract_graph_from_file_local_file, extract_graph_from_file_youtube,
     extract_graph_from_web_page, failed_file_process, get_labels_and_relationtypes, get_source_list_from_graph,
     manually_cancelled_job, populate_graph_schema_from_text, set_status_retry, update_graph, upload_file
 )
@@ -143,13 +143,7 @@ async def create_source_knowledge_graph_url(
         start = time.time()
         source = params.source_url if params.source_url is not None else params.wiki_query
         graph = create_graph_database_connection(credentials)
-        if params.source_type == 's3 bucket' and params.aws_access_key_id and params.aws_secret_access_key:
-            lst_file_name, success_count, failed_count = await asyncio.to_thread(create_source_node_graph_url_s3, graph, params)
-        elif params.source_type == 'gcs bucket':
-            lst_file_name, success_count, failed_count = create_source_node_graph_url_gcs(
-                graph, params, Credentials(params.access_token)
-            )
-        elif params.source_type == 'web-url':
+        if params.source_type == 'web-url':
             lst_file_name, success_count, failed_count = await asyncio.to_thread(
                 create_source_node_graph_web_url, graph, params)
         elif params.source_type == 'youtube':
@@ -227,16 +221,12 @@ async def extract_knowledge_graph_from_file(
             
         if params.source_type == 'local file':
             uri_latency, result = await extract_graph_from_file_local_file(credentials, params, merged_file_path)
-        elif params.source_type == 's3 bucket' and params.source_url:
-            uri_latency, result = await extract_graph_from_file_s3(credentials, params)
         elif params.source_type == 'web-url':
             uri_latency, result = await extract_graph_from_web_page(credentials, params)
         elif params.source_type == 'youtube' and params.source_url:
             uri_latency, result = await extract_graph_from_file_youtube(credentials, params)
         elif params.source_type == 'Wikipedia' and params.wiki_query:
             uri_latency, result = await extract_graph_from_file_Wikipedia(credentials, params)
-        elif params.source_type == 'gcs bucket' and params.gcs_bucket_name:
-            uri_latency, result = await extract_graph_from_file_gcs(credentials, params)
         else:
             return create_api_response('Failed', message='source_type is other than accepted source')
         extract_api_time = time.time() - start_time

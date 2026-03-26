@@ -4,14 +4,10 @@ import json
 import logging
 from typing import Any
 from src.entities.user_credential import Neo4jCredentials
-from transformers import AutoTokenizer, AutoModel
-from langchain_huggingface import HuggingFaceEmbeddings
-from threading import Lock
 import logging
 from urllib.parse import urlparse,parse_qs
 from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
-from langchain_google_vertexai import VertexAIEmbeddings
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import OllamaEmbeddings
 from langchain_neo4j import Neo4jGraph
 from neo4j.exceptions import TransientError
 from langchain_community.graphs.graph_document import GraphDocument
@@ -21,8 +17,6 @@ import os
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-import boto3
-from langchain_community.embeddings import BedrockEmbeddings
 from langchain_core.callbacks import BaseCallbackHandler
 
 
@@ -30,70 +24,6 @@ from langchain_core.callbacks import BaseCallbackHandler
 _embedding_instances = {}
 _embedding_locks = {}
 
-def _ensure_sentence_transformer_model_downloaded(model_name: str, model_path: str):
-    """
-    Download and cache the sentence-transformer model if not already present.
-    """
-    if os.path.isdir(model_path):
-        logging.info(f"Model already downloaded at: {model_path}")
-        return
-    logging.info(f"Downloading model {model_name} to: {model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
-    tokenizer.save_pretrained(model_path)
-    model.save_pretrained(model_path)
-    logging.info("Model downloaded and saved.")
-
-def _get_sentence_transformer_embedding(model_name: str, model_path: str = "./local_model"):
-    """
-    Threadsafe singleton for HuggingFaceEmbeddings for any sentence-transformer model.
-    """
-    if model_name not in _embedding_locks:
-        _embedding_locks[model_name] = Lock()
-    if model_name in _embedding_instances:
-        return _embedding_instances[model_name]
-    with _embedding_locks[model_name]:
-        if model_name in _embedding_instances:
-            return _embedding_instances[model_name]
-        _ensure_sentence_transformer_model_downloaded(model_name, model_path)
-        _embedding_instances[model_name] = HuggingFaceEmbeddings(model_name=model_path)
-        logging.info(f"Embedding model {model_name} initialized.")
-        return _embedding_instances[model_name]
-
-def _get_bedrock_embeddings(model_name: str):
-    """
-    Creates and returns a BedrockEmbeddings object using the specified model name.
-    Args:
-        model_name (str): The name of the model to use for embeddings.
-    Returns:
-        BedrockEmbeddings: An instance of the BedrockEmbeddings class.
-    """
-    try:
-        env_value = get_value_from_env("BEDROCK_EMBEDDING_MODEL_KEY")
-        if not env_value:
-            raise ValueError("Environment variable 'BEDROCK_EMBEDDING_MODEL' is not set.")
-        try:
-            aws_access_key, aws_secret_key, region_name = env_value.split(",")
-        except ValueError:
-            raise ValueError(
-                "Environment variable 'BEDROCK_EMBEDDING_MODEL_KEY' is improperly formatted. "
-                "Expected format: 'aws_access_key,aws_secret_key,region_name'."
-            )
-        bedrock_client = boto3.client(
-                service_name="bedrock-runtime",
-                region_name=region_name.strip(),
-                aws_access_key_id=aws_access_key.strip(),
-                aws_secret_access_key=aws_secret_key.strip(),
-            )
-        bedrock_embeddings = BedrockEmbeddings(
-            model_id=model_name.strip(),
-            client=bedrock_client
-        )
-        return bedrock_embeddings
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        raise
-   
 def create_youtube_url(url):
     you_tu_url = "https://www.youtube.com/watch?v="
     u_pars = urlparse(url)
@@ -160,7 +90,7 @@ def load_embedding_model(embedding_provider: str, embedding_model_name: str):
     Load the appropriate embedding model and return its instance and dimension.
 
     Args:
-        embedding_provider (str): The provider name (e.g., "openai", "gemini", "titan", "sentence-transformer").
+        embedding_provider (str): The provider name (Only "ollama" is supported in Lite).
         embedding_model_name (str): The specific model name.
 
     Returns:
@@ -169,47 +99,28 @@ def load_embedding_model(embedding_provider: str, embedding_model_name: str):
     Raises:
         ValueError: If provider or model is not supported.
     """
-    # Mapping of model dimensions for each provider
-    model_dimensions = {
-        "openai": {
-            "text-embedding-3-large": 3072,
-            "text-embedding-3-small": 1536,
-            "text-embedding-ada-002": 1536,
-        },
-        "gemini": {
-            "gemini-embedding-001": 3072,
-            "text-embedding-005": 768,
-        },
-        "titan": {
-            "amazon.titan-embed-text-v2:0": 1024,
-            "amazon.titan-embed-text-v1": 1536,
-        },
-        "sentence-transformer": {
-            "all-MiniLM-L6-v2": 384,
-        },
-    }
-
     provider = embedding_provider.lower()
     model = embedding_model_name
 
-    if provider not in model_dimensions or model not in model_dimensions[provider]:
-        raise ValueError(f"Unsupported provider/model: {provider}/{model}")
-
-    dimension = model_dimensions[provider][model]
-
-    if provider == "openai":
-        embeddings = OpenAIEmbeddings(model=model)
-    elif provider == "gemini":
-        embeddings = VertexAIEmbeddings(model=model)
-    elif provider == "titan":
-        embeddings = _get_bedrock_embeddings(model)
-    elif provider == "sentence-transformer":
-        model_path = "./local_model" 
-        embeddings = _get_sentence_transformer_embedding(model, model_path)
+    if provider == "ollama" or provider == "sentence-transformer":
+        # Even if provider is sentence-transformer, we now use Ollama for it as per user request
+        dimensions = {
+            "llama3": 4096,
+            "mxbai-embed-large": 1024,
+            "nomic-embed-text": 768,
+            "all-minilm": 384,
+            "all-minilm-l6-v2": 384
+        }
+        # Normalize model name for lookup
+        lookup_model = model.lower().replace("_", "-")
+        dimension = dimensions.get(lookup_model, 768) # Default to 768 if unknown
+        
+        base_url = get_value_from_env("OLLAMA_BASE_URL", "http://localhost:11434")
+        embeddings = OllamaEmbeddings(base_url=base_url, model=model)
+        logging.info(f"Embedding: Using Ollama for {model}, Dimension: {dimension}")
     else:
-        raise ValueError(f"Unknown embedding provider: {provider}")
+        raise ValueError(f"Unsupported embedding provider: {provider}. In this lite version, only Ollama is supported.")
 
-    logging.info(f"Embedding: Using {provider} - {model}, Dimension: {dimension}")
     return embeddings, dimension
 
 def save_graphDocuments_in_neo4j(graph: Neo4jGraph, graph_document_list: List[GraphDocument], max_retries=3, delay=1):

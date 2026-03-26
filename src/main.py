@@ -16,13 +16,7 @@ from langchain_core.documents import Document
 from langchain_community.document_loaders import WikipediaLoader, WebBaseLoader
 from langchain_neo4j import Neo4jGraph
 
-from src.create_chunks import CreateChunksofDocument
-from src.document_sources.gcs_bucket import (
-    copy_failed_file, delete_file_from_gcs, get_documents_from_gcs,
-    get_gcs_bucket_files_info, merge_file_gcs, upload_file_to_gcs
-)
 from src.document_sources.local_file import get_documents_from_file_by_path
-from src.document_sources.s3_bucket import get_documents_from_s3, get_s3_files_info
 from src.document_sources.web_pages import get_documents_from_web_page
 from src.document_sources.wikipedia import get_documents_from_wikipedia
 from src.document_sources.youtube import get_documents_from_youtube, get_youtube_combined_transcript
@@ -35,7 +29,7 @@ from src.make_relationships import (
     execute_graph_query, merge_relationship_between_chunk_and_entites
 )
 from src.shared.common_fn import (
-    check_url_source, create_gcs_bucket_folder_name_hashed, create_graph_database_connection,
+    check_url_source, create_graph_database_connection,
     delete_uploaded_local_file, get_chunk_and_graphDocument, get_value_from_env,
     handle_backticks_nodes_relationship_id_type, last_url_segment, save_graphDocuments_in_neo4j, track_token_usage
 )
@@ -52,248 +46,9 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 logging.basicConfig(format='%(asctime)s - %(message)s', level='INFO')
-GCS_FILE_CACHE = get_value_from_env("GCS_FILE_CACHE", "False", "bool")
-if GCS_FILE_CACHE:
-    BUCKET_UPLOAD_FILE = get_value_from_env('BUCKET_UPLOAD_FILE', default_value=None, data_type=str)
-    BUCKET_FAILED_FILE = get_value_from_env('BUCKET_FAILED_FILE', default_value=None, data_type=str)
-    PROJECT_ID = get_value_from_env('PROJECT_ID', default_value=None, data_type=str)
-
 
 def sanitize_uploaded_fileName(filename, max_length=100):
-    """
-    Sanitize filename to remove problematic characters and limit length.
-    If filename is too long or contains non-ASCII, use a hash for uniqueness.
-
-    Args:
-        filename (str): The original filename.
-        max_length (int): Maximum allowed length for the filename.
-
-    Returns:
-        str: Sanitized filename.
-    """
-    print("Original filename or incoming file Name:", filename)
-    # safe_name = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore').decode('ascii')
-    # safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', safe_name)
-    # if '.' in filename:
-    #     base, ext = os.path.splitext(filename)
-    # else:
-    #     base, ext = filename, ''
-    # if len(safe_name) == 0 or len(safe_name) > max_length:
-    #     hash_part = hashlib.sha256(filename.encode('utf-8')).hexdigest()[:16]
-    #     safe_name = (safe_name[:max_length] if len(safe_name) > 0 else 'file') + '_' + hash_part + ext
-    #     if len(safe_name) > max_length:
-    #         safe_name = safe_name[:max_length - len(ext) - 17] + '_' + hash_part + ext
-    # print("Sanitized filename:", safe_name)
     return filename
-
-
-def create_source_node_graph_url_s3(graph, params):
-    """
-    Create source nodes in the graph for files in an S3 bucket.
-
-    Args:
-        graph: Neo4j graph connection.
-        params: SourceScanExtractParams object.
-
-    Returns:
-        tuple: (list of file info dicts, success_count, failed_count)
-    """
-    lst_file_name = []
-    files_info = get_s3_files_info(
-        params.source_url,
-        aws_access_key_id=params.aws_access_key_id,
-        aws_secret_access_key=params.aws_secret_access_key
-    )
-    if not files_info:
-        raise LLMGraphBuilderException('No pdf files found.')
-    logging.info('files info : %s', files_info)
-    success_count = 0
-    failed_count = 0
-
-    for file_info in files_info:
-        file_name = file_info['file_key']
-        obj_source_node = sourceNode()
-        obj_source_node.file_name = file_name.split('/')[-1].strip() if isinstance(file_name.split('/')[-1], str) else file_name.split('/')[-1]
-        obj_source_node.file_type = 'pdf'
-        obj_source_node.file_size = file_info['file_size_bytes']
-        obj_source_node.file_source = params.source_type
-        obj_source_node.model = params.model
-        obj_source_node.url = str(params.source_url + file_name)
-        obj_source_node.awsAccessKeyId = params.aws_access_key_id
-        obj_source_node.created_at = datetime.now()
-        obj_source_node.chunkNodeCount = 0
-        obj_source_node.chunkRelCount = 0
-        obj_source_node.entityNodeCount = 0
-        obj_source_node.entityEntityRelCount = 0
-        obj_source_node.communityNodeCount = 0
-        obj_source_node.communityRelCount = 0
-        try:
-            graphDb_data_Access = graphDBdataAccess(graph)
-            graphDb_data_Access.create_source_node(obj_source_node)
-            success_count += 1
-            lst_file_name.append({
-                'fileName': obj_source_node.file_name,
-                'fileSize': obj_source_node.file_size,
-                'url': obj_source_node.url,
-                'status': 'Success'
-            })
-        except Exception:
-            failed_count += 1
-            lst_file_name.append({
-                'fileName': obj_source_node.file_name,
-                'fileSize': obj_source_node.file_size,
-                'url': obj_source_node.url,
-                'status': 'Failed'
-            })
-    return lst_file_name, success_count, failed_count
-
-
-def create_source_node_graph_url_gcs(graph, params, credentials):
-    """
-    Create source nodes in the graph for files in a GCS bucket.
-
-    Args:
-        graph: Neo4j graph connection.
-        params: SourceScanExtractParams object.
-        credentials: Google OAuth2 credentials.
-
-    Returns:
-        tuple: (list of file info dicts, success_count, failed_count)
-    """
-    success_count = 0
-    failed_count = 0
-    lst_file_name = []
-    
-    lst_file_metadata= get_gcs_bucket_files_info(params.gcs_project_id, params.gcs_bucket_name, params.gcs_bucket_folder, credentials)
-    for file_metadata in lst_file_metadata :
-      obj_source_node = sourceNode()
-      obj_source_node.file_name = file_metadata['fileName'].strip() if isinstance(file_metadata['fileName'], str) else file_metadata['fileName']
-      obj_source_node.file_size = file_metadata['fileSize']
-      obj_source_node.url = file_metadata['url']
-      obj_source_node.file_source = params.source_type
-      obj_source_node.model = params.model
-      obj_source_node.file_type = 'pdf'
-      obj_source_node.gcsBucket = params.gcs_bucket_name
-      obj_source_node.gcsBucketFolder = file_metadata['gcsBucketFolder']
-      obj_source_node.gcsProjectId = file_metadata['gcsProjectId']
-      obj_source_node.created_at = datetime.now()
-      obj_source_node.access_token = credentials.token
-      obj_source_node.chunkNodeCount=0
-      obj_source_node.chunkRelCount=0
-      obj_source_node.entityNodeCount=0
-      obj_source_node.entityEntityRelCount=0
-      obj_source_node.communityNodeCount=0
-      obj_source_node.communityRelCount=0
-    
-      try:
-          graphDb_data_Access = graphDBdataAccess(graph)
-          graphDb_data_Access.create_source_node(obj_source_node)
-          success_count+=1
-          lst_file_name.append({'fileName':obj_source_node.file_name,'fileSize':obj_source_node.file_size,'url':obj_source_node.url,'status':'Success', 
-                                'gcsBucketName': params.gcs_bucket_name, 'gcsBucketFolder':obj_source_node.gcsBucketFolder, 'gcsProjectId':obj_source_node.gcsProjectId})
-      except Exception as e:
-        failed_count+=1
-        lst_file_name.append({'fileName':obj_source_node.file_name,'fileSize':obj_source_node.file_size,'url':obj_source_node.url,'status':'Failed', 
-                              'gcsBucketName': params.gcs_bucket_name, 'gcsBucketFolder':obj_source_node.gcsBucketFolder, 'gcsProjectId':obj_source_node.gcsProjectId})
-    return lst_file_name,success_count,failed_count
-
-def create_source_node_graph_web_url(graph, params):
-    """
-    Create a source node in the graph for a web page.
-
-    Args:
-        graph: Neo4j graph connection.
-        params: SourceScanExtractParams object.
-
-    Returns:
-        tuple: (list of file info dicts, success_count, failed_count)
-    """
-    success_count=0
-    failed_count=0
-    lst_file_name = []
-    pages = WebBaseLoader(params.source_url, verify_ssl=False).load()
-    if pages==None or len(pages)==0:
-      failed_count+=1
-      message = f"Unable to read data for given url : {params.source_url}"
-      raise LLMGraphBuilderException(message)
-    try:
-      title = pages[0].metadata['title'].strip()
-      if title:
-        graphDb_data_Access = graphDBdataAccess(graph)
-        existing_url = graphDb_data_Access.get_websource_url(title)
-        if existing_url != params.source_url:
-          title = str(title) + "-" + str(last_url_segment(params.source_url)).strip()
-      else:
-        title = last_url_segment(params.source_url)
-      language = pages[0].metadata['language']
-    except:
-      title = last_url_segment(params.source_url)
-      language = "N/A"
-
-    obj_source_node = sourceNode()
-    obj_source_node.file_type = 'text'
-    obj_source_node.file_source = params.source_type
-    obj_source_node.model = params.model
-    obj_source_node.url = urllib.parse.unquote(params.source_url)
-    obj_source_node.created_at = datetime.now()
-    obj_source_node.file_name = title.strip() if isinstance(title, str) else title
-    obj_source_node.language = language
-    obj_source_node.file_size = sys.getsizeof(pages[0].page_content)
-    obj_source_node.chunkNodeCount=0
-    obj_source_node.chunkRelCount=0
-    obj_source_node.entityNodeCount=0
-    obj_source_node.entityEntityRelCount=0
-    obj_source_node.communityNodeCount=0
-    obj_source_node.communityRelCount=0
-    graphDb_data_Access = graphDBdataAccess(graph)
-    graphDb_data_Access.create_source_node(obj_source_node)
-    lst_file_name.append({'fileName':obj_source_node.file_name,'fileSize':obj_source_node.file_size,'url':obj_source_node.url,'status':'Success'})
-    success_count+=1
-    return lst_file_name,success_count,failed_count
-  
-def create_source_node_graph_url_youtube(graph, params):
-    """
-    Create a source node in the graph for a YouTube video.
-
-    Args:
-        graph: Neo4j graph connection.
-        params: SourceScanExtractParams object.
-
-    Returns:
-        tuple: (list of file info dicts, success_count, failed_count)
-    """
-    youtube_url, language = check_url_source(source_type=params.source_type, yt_url=params.source_url)
-    success_count=0
-    failed_count=0
-    lst_file_name = []
-    obj_source_node = sourceNode()
-    obj_source_node.file_type = 'text'
-    obj_source_node.file_source = params.source_type
-    obj_source_node.model = params.model
-    obj_source_node.url = youtube_url
-    obj_source_node.created_at = datetime.now()
-    obj_source_node.chunkNodeCount=0
-    obj_source_node.chunkRelCount=0
-    obj_source_node.entityNodeCount=0
-    obj_source_node.entityEntityRelCount=0
-    obj_source_node.communityNodeCount=0
-    obj_source_node.communityRelCount=0
-    match = re.search(r'(?:v=)([0-9A-Za-z_-]{11})\s*',obj_source_node.url)
-    logging.info(f"match value: {match}")
-    obj_source_node.file_name = match.group(1)
-    transcript= get_youtube_combined_transcript(match.group(1))
-    # logging.info(f"Youtube transcript : {transcript}")
-    if transcript==None or len(transcript)==0:
-      message = f"Youtube transcript is not available for : {obj_source_node.file_name}"
-      raise LLMGraphBuilderException(message)
-    else:  
-      obj_source_node.file_size = sys.getsizeof(transcript)
-    
-    graphDb_data_Access = graphDBdataAccess(graph)
-    graphDb_data_Access.create_source_node(obj_source_node)
-    lst_file_name.append({'fileName':obj_source_node.file_name,'fileSize':obj_source_node.file_size,'url':obj_source_node.url,'status':'Success'})
-    success_count+=1
-    return lst_file_name,success_count,failed_count
 
 def create_source_node_graph_url_wikipedia(graph, params):
     """
@@ -339,54 +94,16 @@ def create_source_node_graph_url_wikipedia(graph, params):
     return lst_file_name,success_count,failed_count
     
 async def extract_graph_from_file_local_file(credentials, params, merged_file_path):
-
   logging.info(f'Process file name :{params.file_name} from local file system')
   if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    if GCS_FILE_CACHE:
-      folder_name = create_gcs_bucket_folder_name_hashed(credentials.uri, params.file_name)
-      file_name, pages = get_documents_from_gcs( PROJECT_ID, BUCKET_UPLOAD_FILE, folder_name, params.file_name)
-    else:
-      file_name, pages, file_extension = get_documents_from_file_by_path(merged_file_path, params.file_name)
+    file_name, pages, file_extension = get_documents_from_file_by_path(merged_file_path, params.file_name)
     if pages==None or len(pages)==0:
       raise LLMGraphBuilderException(f'File content is not available for file : {file_name}')
     return await processing_source(credentials, params, pages, merged_file_path, True)
   else:
     return await processing_source(credentials, params, [], merged_file_path, True)
   
-async def extract_graph_from_file_s3(credentials, params):
-  """
-  Extract graph data from a file in S3.
-
-  Args:
-      credentials: Database credentials.
-      params: SourceScanExtractParams object.
-
-  Returns:
-      dict: Processing latency and response details.
-  """
-  if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    if params.aws_access_key_id is None or params.aws_secret_access_key is None:
-      raise LLMGraphBuilderException('Please provide AWS access and secret keys')
-    else:
-      logging.info("Insert in S3 Block")
-      file_name, pages = get_documents_from_s3(params.source_url, params.aws_access_key_id, params.aws_secret_access_key)
-    if pages==None or len(pages)==0:
-      raise LLMGraphBuilderException(f'File content is not available for file : {file_name}')
-    return await processing_source(credentials, params, pages)
-  else:
-    return await processing_source(credentials, params, [])
-  
 async def extract_graph_from_web_page(credentials, params):
-  """
-  Extract graph data from a web page.
-
-  Args:
-      credentials: Database credentials.
-      params: SourceScanExtractParams object.
-
-  Returns:
-      dict: Processing latency and response details.
-  """
   if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
     pages = get_documents_from_web_page(params.source_url)
     if pages==None or len(pages)==0:
@@ -396,16 +113,6 @@ async def extract_graph_from_web_page(credentials, params):
     return await processing_source(credentials, params, [])
   
 async def extract_graph_from_file_youtube(credentials, params):
-  """
-  Extract graph data from a YouTube video.
-
-  Args:
-      credentials: Database credentials.
-      params: SourceScanExtractParams object.
-
-  Returns:
-      dict: Processing latency and response details.
-  """
   if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
     file_name, pages = get_documents_from_youtube(params.source_url)
 
@@ -416,16 +123,6 @@ async def extract_graph_from_file_youtube(credentials, params):
      return await processing_source(credentials, params, [])
     
 async def extract_graph_from_file_Wikipedia(credentials, params):
-  """
-  Extract graph data from a Wikipedia page.
-
-  Args:
-      credentials: Database credentials.
-      params: SourceScanExtractParams object.
-
-  Returns:
-      dict: Processing latency and response details.
-  """
   if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
     file_name, pages = get_documents_from_wikipedia(params.wiki_query, params.language)
     if pages==None or len(pages)==0:
@@ -433,25 +130,6 @@ async def extract_graph_from_file_Wikipedia(credentials, params):
     return await processing_source(credentials, params, pages)
   else:
     return await processing_source(credentials, params,[])
-
-async def extract_graph_from_file_gcs(credentials, params):
-  """
-  Extract graph data from a file in GCS.
-
-  Args:
-      credentials: Database credentials.
-      params: SourceScanExtractParams object.
-
-  Returns:
-      dict: Processing latency and response details.
-  """
-  if params.retry_condition in ["", None] or params.retry_condition not in [DELETE_ENTITIES_AND_START_FROM_BEGINNING, START_FROM_LAST_PROCESSED_POSITION]:
-    file_name, pages = get_documents_from_gcs(params.gcs_project_id, params.gcs_bucket_name, params.gcs_bucket_folder, params.gcs_blob_filename, params.access_token)
-    if pages==None or len(pages)==0:
-      raise LLMGraphBuilderException(f'File content is not available for file : {file_name}')
-    return await processing_source(credentials, params, pages)
-  else:
-    return await processing_source(credentials, params, [])
   
 async def processing_source(credentials, params, pages, merged_file_path=None, is_uploaded_from_local=None):
   """

@@ -22,12 +22,6 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.callbacks import StdOutCallbackHandler, BaseCallbackHandler
 from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 # LangChain chat models
-from langchain_openai import ChatOpenAI, AzureChatOpenAI
-from langchain_google_vertexai import ChatVertexAI
-from langchain_groq import ChatGroq
-from langchain_anthropic import ChatAnthropic
-from langchain_fireworks import ChatFireworks
-from langchain_aws import ChatBedrock
 from langchain_community.chat_models import ChatOllama
 
 # Local imports
@@ -72,27 +66,11 @@ def get_history_by_session_id(session_id):
 
 def get_total_tokens(ai_response, llm):
     try:
-        if isinstance(llm, (ChatOpenAI, AzureChatOpenAI, ChatFireworks, ChatGroq)):
-            total_tokens = ai_response.response_metadata.get('token_usage', {}).get('total_tokens', 0)
-        
-        elif isinstance(llm, ChatVertexAI):
-            total_tokens = ai_response.response_metadata.get('usage_metadata', {}).get('prompt_token_count', 0)
-        
-        elif isinstance(llm, ChatBedrock):
-            total_tokens = ai_response.response_metadata.get('usage', {}).get('total_tokens', 0)
-        
-        elif isinstance(llm, ChatAnthropic):
-            input_tokens = int(ai_response.response_metadata.get('usage', {}).get('input_tokens', 0))
-            output_tokens = int(ai_response.response_metadata.get('usage', {}).get('output_tokens', 0))
-            total_tokens = input_tokens + output_tokens
-        
-        elif isinstance(llm, ChatOllama):
+        if isinstance(llm, ChatOllama):
             total_tokens = ai_response.response_metadata.get("prompt_eval_count", 0)
-        
         else:
             logging.warning(f"Unrecognized language model: {type(llm)}. Returning 0 tokens.")
             total_tokens = 0
-
     except Exception as e:
         logging.error(f"Error retrieving total tokens: {e}")
         total_tokens = 0
